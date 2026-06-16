@@ -371,9 +371,249 @@ pub fn smart_truncate(content: &str, max_lines: usize, _lang: &Language) -> Stri
     result.join("\n")
 }
 
+lazy_static! {
+    /// CPython frame header: `  File "path", line N, in func`
+    static ref TB_PY_FILE: Regex =
+        Regex::new(r#"^\s*File "[^"]*", line \d+"#).unwrap();
+    /// V8/Node frame: `    at func (path:line:col)` or `    at path:line:col`
+    static ref TB_JS_AT: Regex =
+        Regex::new(r"^\s*at\s+.+:\d+(:\d+)?\)?\s*$").unwrap();
+}
+
+/// True when `content` looks like a stack trace worth frame-collapsing.
+///
+/// Conservative: requires the CPython banner or at least three recognizable
+/// frame lines, so ordinary prose with one `File "..."` mention is left alone.
+pub fn looks_like_traceback(content: &str) -> bool {
+    if content.contains("Traceback (most recent call last):") {
+        return true;
+    }
+    let frames = content
+        .lines()
+        .filter(|l| TB_PY_FILE.is_match(l) || TB_JS_AT.is_match(l))
+        .count();
+    frames >= 3
+}
+
+/// A parsed item in a trace: either a stack frame (1–2 source lines) or any
+/// other line (banner, exception message, blank, chained-exception text).
+enum TraceItem {
+    Frame(String),
+    Other(String),
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// Collapse repeated stack frames in a traceback while preserving every
+/// *unique* frame, the banner, and the exception line.
+///
+/// Two reductions, both lossless for the information an agent needs:
+/// 1. **Cycle collapse** — a contiguous block of frames that repeats (retry
+///    loops, mutual recursion) is shown once with a `×N` marker.
+/// 2. **Head/tail cap** — a trace with more unique frames than [`TB_MAX_FRAMES`]
+///    keeps the first and last frames (where the cause and the failure live)
+///    and elides the middle with a count.
+///
+/// Deterministic, no model, no network. Returns the input unchanged if it does
+/// not parse as a trace.
+pub fn compact_traceback(content: &str) -> String {
+    const TB_MAX_FRAMES: usize = 60;
+    const TB_HEAD_TAIL: usize = 20;
+    const TB_MAX_CYCLE: usize = 8;
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // --- Parse into frames and non-frame lines -----------------------------
+    let mut items: Vec<TraceItem> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if TB_PY_FILE.is_match(line) {
+            // A CPython frame is the File line plus the (more-indented) source
+            // line beneath it, when present.
+            let mut frame = line.to_string();
+            if i + 1 < lines.len()
+                && !TB_PY_FILE.is_match(lines[i + 1])
+                && !lines[i + 1].trim().is_empty()
+                && indent_of(lines[i + 1]) > indent_of(line)
+            {
+                frame.push('\n');
+                frame.push_str(lines[i + 1]);
+                i += 2;
+            } else {
+                i += 1;
+            }
+            items.push(TraceItem::Frame(frame));
+        } else if TB_JS_AT.is_match(line) {
+            items.push(TraceItem::Frame(line.to_string()));
+            i += 1;
+        } else {
+            items.push(TraceItem::Other(line.to_string()));
+            i += 1;
+        }
+    }
+
+    // --- Walk items, collapsing maximal runs of frames ---------------------
+    let mut out: Vec<String> = Vec::new();
+    let mut idx = 0;
+    while idx < items.len() {
+        match &items[idx] {
+            TraceItem::Other(text) => {
+                out.push(text.clone());
+                idx += 1;
+            }
+            TraceItem::Frame(_) => {
+                // Gather the contiguous run of frames starting here.
+                let start = idx;
+                let mut frames: Vec<&str> = Vec::new();
+                while idx < items.len() {
+                    if let TraceItem::Frame(text) = &items[idx] {
+                        frames.push(text);
+                        idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+                emit_frames(&frames, &mut out, TB_MAX_CYCLE, TB_MAX_FRAMES, TB_HEAD_TAIL);
+                let _ = start;
+            }
+        }
+    }
+
+    out.join("\n")
+}
+
+/// Emit one contiguous run of frames with cycle-collapse and a head/tail cap.
+fn emit_frames(
+    frames: &[&str],
+    out: &mut Vec<String>,
+    max_cycle: usize,
+    max_frames: usize,
+    head_tail: usize,
+) {
+    // 1. Cycle-collapse into (block, repeats) pairs.
+    let mut collapsed: Vec<(Vec<&str>, usize)> = Vec::new();
+    let n = frames.len();
+    let mut i = 0;
+    while i < n {
+        let mut best_len = 1usize;
+        let mut best_reps = 1usize;
+        // Prefer the block length that covers the most lines (longest cycle).
+        let max_l = ((n - i) / 2).min(max_cycle);
+        for l in 1..=max_l {
+            if frames[i..i + l] != frames[i + l..i + 2 * l] {
+                continue;
+            }
+            let mut reps = 2;
+            while i + (reps + 1) * l <= n
+                && frames[i..i + l] == frames[i + reps * l..i + (reps + 1) * l]
+            {
+                reps += 1;
+            }
+            if l * reps > best_len * best_reps {
+                best_len = l;
+                best_reps = reps;
+            }
+        }
+        collapsed.push((frames[i..i + best_len].to_vec(), best_reps));
+        i += best_len * best_reps;
+    }
+
+    // 2. Render, applying the head/tail cap on the number of rendered blocks.
+    let total = collapsed.len();
+    for (pos, (block, reps)) in collapsed.iter().enumerate() {
+        if total > max_frames && pos == head_tail {
+            let elided = total - 2 * head_tail;
+            out.push(format!("  ... {} more frames elided ...", elided));
+        }
+        if total > max_frames && pos >= head_tail && pos < total - head_tail {
+            continue;
+        }
+        for fl in block {
+            out.push((*fl).to_string());
+        }
+        if *reps > 1 {
+            let unit = if block.len() == 1 { "frame" } else { "frames" };
+            out.push(format!(
+                "  [\u{2191} above {} {} repeated \u{00d7}{}]",
+                block.len(),
+                unit,
+                reps
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
+
+    #[test]
+    fn test_looks_like_traceback() {
+        assert!(looks_like_traceback(
+            "Traceback (most recent call last):\n  File \"a.py\", line 1, in <module>\n    x()"
+        ));
+        // three JS frames, no banner
+        assert!(looks_like_traceback(
+            "Error: boom\n    at a (/x.js:1:2)\n    at b (/y.js:3:4)\n    at c (/z.js:5:6)"
+        ));
+        // ordinary prose mentioning a file is NOT a traceback
+        assert!(!looks_like_traceback(
+            "See File \"notes.md\", line 1 for details about the design."
+        ));
+    }
+
+    #[test]
+    fn test_compact_traceback_collapses_repeated_cycle() {
+        // A retry loop: a 3-frame cycle repeated 4 times.
+        let mut input = String::from("Traceback (most recent call last):\n");
+        let cycle = "  File \"/app/svc.py\", line 10, in place\n    self._charge(o)\n  File \"/app/svc.py\", line 20, in _charge\n    gw.charge(amt)\n  File \"/app/gw.py\", line 30, in charge\n    return client.post(url)\n";
+        for _ in 0..4 {
+            input.push_str(cycle);
+        }
+        input.push_str("ConnectionError: timed out\n");
+
+        let out = compact_traceback(&input);
+
+        // The cycle is shown once with a repeat marker, not four times.
+        assert!(
+            out.contains("repeated"),
+            "expected a repeat marker:\n{}",
+            out
+        );
+        assert_eq!(
+            out.matches("in place").count(),
+            1,
+            "cycle not collapsed:\n{}",
+            out
+        );
+        // The banner and the exception line survive (lossless for unique info).
+        assert!(out.contains("Traceback (most recent call last):"));
+        assert!(out.contains("ConnectionError: timed out"));
+        // Real savings on the repetitive part.
+        let savings = 100.0 - (count_tokens(&out) as f64 / count_tokens(&input) as f64 * 100.0);
+        assert!(
+            savings >= 40.0,
+            "expected >=40% savings, got {:.1}%",
+            savings
+        );
+    }
+
+    #[test]
+    fn test_compact_traceback_preserves_non_repeating_trace() {
+        // Every frame unique → nothing to collapse → unique frames all kept.
+        let input = "Traceback (most recent call last):\n  File \"a.py\", line 1, in f\n    g()\n  File \"b.py\", line 2, in g\n    h()\nValueError: bad\n";
+        let out = compact_traceback(input);
+        assert!(out.contains("in f") && out.contains("in g"));
+        assert!(out.contains("ValueError: bad"));
+        assert!(!out.contains("repeated"));
+    }
 
     #[test]
     fn test_filter_level_parsing() {

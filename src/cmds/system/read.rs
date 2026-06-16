@@ -35,19 +35,28 @@ pub fn run(
         eprintln!("Detected language: {:?}", lang);
     }
 
-    // Apply filter
-    let filter = filter::get_filter(level);
-    let mut filtered = filter.filter(&content, &lang);
+    // Trace-aware path: a stack trace is collapsed by frame (repeated retry /
+    // recursion frames folded to `×N`) before any language filter, which would
+    // otherwise mangle it. Lossless for every unique frame.
+    let mut filtered = if filter::looks_like_traceback(&content) {
+        filter::compact_traceback(&content)
+    } else {
+        // Apply filter
+        let filter = filter::get_filter(level);
+        let f = filter.filter(&content, &lang);
 
-    // Safety: if filter emptied a non-empty file, fall back to raw content
-    if filtered.trim().is_empty() && !content.trim().is_empty() {
-        eprintln!(
-            "rtk: warning: filter produced empty output for {} ({} bytes), showing raw content",
-            file.display(),
-            content.len()
-        );
-        filtered = content.clone();
-    }
+        // Safety: if filter emptied a non-empty file, fall back to raw content
+        if f.trim().is_empty() && !content.trim().is_empty() {
+            eprintln!(
+                "rtk: warning: filter produced empty output for {} ({} bytes), showing raw content",
+                file.display(),
+                content.len()
+            );
+            content.clone()
+        } else {
+            f
+        }
+    };
 
     if verbose > 0 {
         let original_lines = content.lines().count();
@@ -109,9 +118,14 @@ pub fn run_stdin(
         eprintln!("Language: {:?} (stdin has no extension)", lang);
     }
 
-    // Apply filter
-    let filter = filter::get_filter(level);
-    let mut filtered = filter.filter(&content, &lang);
+    // Trace-aware path (see `run`): collapse repeated stack frames before the
+    // generic filter, which would otherwise mangle a traceback.
+    let mut filtered = if filter::looks_like_traceback(&content) {
+        filter::compact_traceback(&content)
+    } else {
+        let filter = filter::get_filter(level);
+        filter.filter(&content, &lang)
+    };
 
     if verbose > 0 {
         let original_lines = content.lines().count();
