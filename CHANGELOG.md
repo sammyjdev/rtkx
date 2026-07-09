@@ -5,6 +5,15 @@ All notable changes to rtk (Rust Token Killer) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.1](https://github.com/sammyjdev/rtkx/compare/v0.43.0...v0.43.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* package rtk binary as rtkx in release archives (unblocks GHSA-r7wg-f7r2-8wf7 attestation) ([e6a4b39](https://github.com/sammyjdev/rtkx/commit/e6a4b39f3bef21b6f986ecb7904bcb931bc58060))
+* package the compiled rtk binary as rtkx in release archives ([0644e5a](https://github.com/sammyjdev/rtkx/commit/0644e5abc026fc6f8423fc7dfff15ebc53dbd862))
+* **packaging:** point deb/rpm assets at the rtk binary after bin rename ([d12e1dd](https://github.com/sammyjdev/rtkx/commit/d12e1ddfaf555d068250dc2db47162489af7e132))
+
 ## [0.42.4](https://github.com/rtk-ai/rtk/compare/v0.42.3...v0.42.4) (2026-06-12)
 
 
