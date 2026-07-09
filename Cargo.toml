@@ -1,16 +1,23 @@
 [package]
-name = "rtk"
-version = "0.42.4"
+name = "rtkx"
+version = "0.43.0"
 edition = "2021"
 rust-version = "1.91"
-authors = ["Patrick Szymkowiak"]
-description = "Rust Token Killer - High-performance CLI proxy to minimize LLM token consumption"
+authors = ["Patrick Szymkowiak", "sammyjdev"]
+description = "rtkx - context compression CLI for the AXON stack, a fork of rtk (Rust Token Killer)"
 license = "Apache 2.0"
-homepage = "https://www.rtk-ai.app"
-repository = "https://github.com/rtk-ai/rtk"
+homepage = "https://github.com/sammyjdev/rtkx"
+repository = "https://github.com/sammyjdev/rtkx"
 readme = "README.md"
 keywords = ["cli", "llm", "token", "filter", "productivity"]
 categories = ["command-line-utilities", "development-tools"]
+
+# Binary is named `rtk` (not the package name `rtkx`) so it shadows the brew
+# `rtk` the Claude Code hook invokes, and so upstream tests using
+# CARGO_BIN_EXE_rtk keep resolving after the rtkx rebrand.
+[[bin]]
+name = "rtk"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
