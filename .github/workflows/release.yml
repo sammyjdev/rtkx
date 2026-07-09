@@ -164,6 +164,10 @@ jobs:
     name: Create Release
     needs: [build, build-deb, build-rpm]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -201,6 +205,11 @@ jobs:
         run: |
           cd release
           sha256sum * > checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'release/*'
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
