@@ -89,6 +89,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
+          cp rtk rtkx
           tar -czvf ../../../rtkx-${{ matrix.target }}.${{ matrix.archive }} rtkx
           cd ../../..
 
@@ -96,6 +97,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
+          copy rtk.exe rtkx.exe
           7z a ../../../rtkx-${{ matrix.target }}.${{ matrix.archive }} rtkx.exe
           cd ../../..
 
